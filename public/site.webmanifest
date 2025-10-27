@@ -1,0 +1,1 @@
+{ "name":"BetrSlip", "short_name":"BetrSlip", "icons":[{"src":"/logo.svg","sizes":"128x128","type":"image/svg+xml"}], "theme_color":"#0a0a0c", "background_color":"#0a0a0c", "display":"standalone" }

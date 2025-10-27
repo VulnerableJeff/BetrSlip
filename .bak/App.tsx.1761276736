@@ -1,0 +1,32 @@
+import React, { useState } from "react";
+import Header from "./components/Header";
+import OneClick from "./components/OneClick";
+import BestGuesses from "./components/BestGuesses";
+
+export type League = "NFL"|"NBA"|"MLB"|"UFC";
+
+export default function App(){
+  const [league,setLeague]=useState<League>("NFL");
+  const [live,setLive]=useState(false);
+  const [guesses,setGuesses]=useState<any[]>([]); // from OCR
+
+  return (
+    <div className="max-w-[980px] mx-auto px-4 py-4">
+      <Header league={league} setLeague={setLeague} live={live} setLive={setLive}/>
+      <div className="my-4"></div>
+
+      <div className="card p-4 mb-4">
+        <div className="section-title">🎟️ One-Click (Upload → Stake → Go)</div>
+        <p className="text-[13px] text-[var(--muted)] mb-3">
+          Upload a betslip or toggle LIVE and tap Run.
+        </p>
+        <OneClick league={league} live={live} onOCR={(items)=>setGuesses(items)} />
+      </div>
+
+      <div className="card p-4 mb-24">
+        <div className="section-title">🔎 From Screenshot — Best Guesses</div>
+        <BestGuesses guesses={guesses}/>
+      </div>
+    </div>
+  );
+}

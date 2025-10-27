@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme vars the app expects */
+:root{
+  --accent: #7c3aed;        /* purple */
+  --accent-2: #2563eb;      /* blue */
+}
+.gradient-text{
+  background: linear-gradient(90deg,#60a5fa, #a78bfa);
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.scroll-chips{ overflow:auto; scrollbar-width:none; }
+.scroll-chips::-webkit-scrollbar{ display:none; }
+
+/* Tighten default body on mobile */
+html,body,#root{ height:100%; background:#0a0a0c; }
+@media (prefers-color-scheme: light){
+  html,body,#root{ background:#fafafa; }
+}
+
+/* === BetrSlip Branding & Fixes === */
+.scroll-chips::-webkit-scrollbar { display: none; }
+.scroll-chips { -ms-overflow-style: none; scrollbar-width: none; }
+.gradient-text {
+  background: linear-gradient(90deg,#93c5fd,#a78bfa 50%,#f472b6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+@supports not (translate: 0) {
+  input.peer:checked + div > span { transform: translateX(24px); }
+}
+
+/* === BetrSlip Tagline Glow === */
+@keyframes bs-glow {
+  0% { text-shadow: 0 0 0.2rem rgba(147,197,253,.35), 0 0 0.6rem rgba(167,139,250,.20); opacity:.85; }
+  50%{ text-shadow: 0 0 0.35rem rgba(147,197,253,.55), 0 0 1rem rgba(244,114,182,.25); opacity:1; }
+  100%{ text-shadow: 0 0 0.2rem rgba(147,197,253,.35), 0 0 0.6rem rgba(167,139,250,.20); opacity:.85; }
+}
+.brand-tagline{
+  font-size:12px;
+  line-height:1.15;
+  margin-top:2px;
+  opacity:.9;
+  color:#cbd5e1;
+  animation: bs-glow 2.8s ease-in-out infinite;
+  white-space:nowrap;
+}
+.brand-tagline .nowrap{ white-space:nowrap; }
+@media (max-width: 420px){
+  .brand-tagline{ font-size:11px; }
+}
+
+/* SmartLogo tune */
+img[alt="BetrSlip"] { background: transparent; }
+
+/* SmartLogo tune */
+img[alt="BetrSlip"]{ background: transparent; }
