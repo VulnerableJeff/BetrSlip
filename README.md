@@ -5,7 +5,7 @@ README.md
 **BetrSlip** is an AI-driven web app that helps you analyze sportsbook screenshots, detect betting legs, and build smarter parlays.  
 Simply upload your bet slip or scoreboard — the app automatically parses your selections, calculates implied probabilities, and gives real-time AI suggestions for higher-confidence picks.
 
-![BetrSlip Logo](./public/logo.png)
+https://i.imgur.com/4gjOdfZ.png
 
 ---
 
