@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme vars the app expects */
+:root{
+  --accent: #7c3aed;        /* purple */
+  --accent-2: #2563eb;      /* blue */
+}
+.gradient-text{
+  background: linear-gradient(90deg,#60a5fa, #a78bfa);
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.scroll-chips{ overflow:auto; scrollbar-width:none; }
+.scroll-chips::-webkit-scrollbar{ display:none; }
+
+/* Tighten default body on mobile */
+html,body,#root{ height:100%; background:#0a0a0c; }
+@media (prefers-color-scheme: light){
+  html,body,#root{ background:#fafafa; }
+}

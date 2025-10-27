@@ -1,0 +1,442 @@
+import BrandLogo from "./components/BrandLogo";
+import Tagline from "./components/Tagline";
+import Logo from "./components/Logo";
+import React, { useMemo, useState, useEffect } from "react";
+import html2canvas from "html2canvas";
+import { saveAs } from "file-saver";
+import Fuse from "fuse.js";
+import { getOddsAll, type OddsLeg } from "./api/odds";
+import { ocrImage } from "./ocr/extract";
+import { getAllMatchups, type Matchup } from "./api/matchups";
+import { QuickStake } from "./components/QuickStake";
+import { ProcessingOverlay } from "./components/ProcessingOverlay";
+import { BetSlipModal } from "./components/BetSlipModal";
+
+/* ---------- helpers / styles ---------- */
+const cx = (...a: (string | false | undefined)[]) => a.filter(Boolean).join(" ");
+const LSKEY = { open:"betrslip:open", dark:"betrslip:dark", auto:"betrslip:auto", league:"betrslip:league", legs:"betrslip:legs", bankroll:"betrslip:bankroll", risk:"betrslip:risk" } as const;
+const americanToDecimal=(o:number)=>o>0?1+o/100:1+100/Math.abs(o);
+const implied=(o:number)=>o>0?100/(o+100): -o/(-o+100);
+const kelly=(p:number,b:number)=>Math.max(0,(b*p-(1-p))/b);
+
+/* demo props (fallback when no API/live) */
+const SAMPLE_PROPS = [
+  { league: "NFL", player: "P. Mahomes", market: "Passing Yards", line: 277.5, odds: -110, prob: 0.55 },
+  { league: "NBA", player: "L. Doncic",  market: "Points + Assists", line: 41.5, odds: -105, prob: 0.57 },
+  { league: "UFC", player: "Fighter A",  market: "Moneyline",        line: null as any, odds: -145, prob: 0.59 },
+  { league: "MLB", player: "A. Judge",   market: "Total Bases 1.5+", line: 1.5,   odds: 120,  prob: 0.45 },
+];
+
+function detectLeagueFromText(t: string): "NFL"|"NBA"|"MLB"|"UFC"|null {
+  const s=t.toLowerCase();
+  if (/\bnfl\b|chiefs|cowboys|49ers|eagles|ravens|patriots|giants|jets|packers|steelers/.test(s)) return "NFL";
+  if (/\bnba\b|lakers|knicks|celtics|warriors|bucks|mavericks|heat|bulls|76ers/.test(s)) return "NBA";
+  if (/\bmlb\b|yankees|dodgers|braves|astros|phillies|mets|padres|cubs/.test(s)) return "MLB";
+  if (/\bufc\b|mma|featherweight|lightweight|bantamweight|welterweight/.test(s)) return "UFC";
+  return null;
+}
+
+/* ---------- tiny primitives ---------- */
+function Card({ children, className="" }: { children: React.ReactNode; className?: string }) {
+  return <div className={cx("rounded-2xl border border-white/10 bg-white/[0.03] shadow-[0_6px_24px_rgba(0,0,0,0.25)] sm:rounded-xl", className)}>{children}</div>;
+}
+function Badge({ children }:{children:React.ReactNode}) {
+  return <span className="rounded-full border border-white/15 bg-white/[0.06] px-2 py-0.5 text-[12px] sm:text-[11px]">{children}</span>;
+}
+function Button({children,variant="default",size="lg",onClick,className=""}:{children:React.ReactNode;variant?:"default"|"outline"|"ghost"|"primary"|"secondary"|"danger";size?:"sm"|"md"|"lg";onClick?():void;className?:string;}) {
+  const map:any={default:"bg-white text-black hover:bg-white/90",outline:"border border-white/20 hover:bg-white/[0.06]",ghost:"hover:bg-white/[0.06]",primary:"bg-[var(--accent)] text-white hover:opacity-90",secondary:"bg-[var(--accent-2)] text-white hover:opacity-90",danger:"bg-red-500 text-white hover:bg-red-500/90"};
+  const sizes:any={sm:"px-2.5 py-1 text-[12px]",md:"px-3 py-1.5 text-[13px]",lg:"px-3.5 py-2 text-[14px]"};
+  return <button onClick={onClick} className={cx("rounded-lg transition active:scale-[0.99]",sizes[size],map[variant],className)}>{children}</button>;
+}
+function Section({title,icon,open,onToggle,children,right}:{title:string;icon?:string;open:boolean;onToggle:()=>void;children:React.ReactNode;right?:React.ReactNode}){
+  return (
+    <Card className="overflow-hidden">
+      <button onClick={onToggle} className="w-full px-4 py-3 sm:px-3.5 sm:py-2.5 flex items-center justify-between select-none">
+        <div className="flex items-center gap-2">
+          <span className={cx("inline-block h-2.5 w-2.5 rounded-full transition",open?"bg-emerald-400":"bg-neutral-500")} />
+          <h3 className="text-[16px] sm:text-[15px] font-semibold">{icon} {title}</h3>
+        </div>
+        <div className="flex items-center gap-2">{right}<span className="text-[12px] opacity-70">{open?"Hide":"Show"}</span></div>
+      </button>
+      {open && <div className="px-4 pb-4 pt-0 sm:px-3.5 sm:pb-3.5">{children}</div>}
+    </Card>
+  );
+}
+
+/* ---------- PWA prompt ---------- */
+function InstallPrompt(){
+  const [evt, setEvt] = useState<any>(null); const [show, setShow] = useState(false);
+  useEffect(()=>{ const h=(e:any)=>{e.preventDefault(); setEvt(e); setShow(true);}; window.addEventListener("beforeinstallprompt",h); return ()=>window.removeEventListener("beforeinstallprompt",h);},[]);
+  if(!show) return null;
+  return (
+    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 bg-white text-black rounded-full shadow px-3 py-1.5 flex items-center gap-2 text-[13px]">
+      <span>Install BetrSlip?</span>
+      <button className="px-2 py-0.5 rounded-md bg-black text-white" onClick={async()=>{await (evt?.prompt?.()); setShow(false);}}>Install</button>
+      <button className="px-2 py-0.5 rounded-md border" onClick={()=>setShow(false)}>Later</button>
+    </div>
+  );
+}
+
+/* ---------- Main ---------- */
+export default function App(){
+  /* persisted toggles */
+  const [dark,setDark]=useState<boolean>(()=>{ try{ return JSON.parse(localStorage.getItem(LSKEY.dark) ?? "true"); }catch{ return true; }});
+  const [autoCollapse,setAutoCollapse]=useState<boolean>(()=>{ try{ return JSON.parse(localStorage.getItem(LSKEY.auto) ?? "true"); }catch{ return true; }});
+  const [filterLeague,setFilterLeague]=useState<"NFL"|"NBA"|"MLB"|"UFC"|null>(()=>{ const v=localStorage.getItem(LSKEY.league); return v && ["NFL","NBA","MLB","UFC"].includes(v)? (v as any): null; });
+  useEffect(()=>localStorage.setItem(LSKEY.dark, JSON.stringify(dark)),[dark]);
+  useEffect(()=>localStorage.setItem(LSKEY.auto, JSON.stringify(autoCollapse)),[autoCollapse]);
+  useEffect(()=> filterLeague ? localStorage.setItem(LSKEY.league, filterLeague) : localStorage.removeItem(LSKEY.league), [filterLeague]);
+
+  const [prompt,setPrompt]=useState("Analyze today's board. Surface edges where sharp% >> public% and CLV positive.");
+
+  /* parlay state (persisted) */
+  const [legs,setLegs]=useState<{label:string; odds:number; prob:number}[]>(
+    ()=>{ try{ const v=localStorage.getItem(LSKEY.legs); return v?JSON.parse(v):[] }catch{return []} }
+  );
+  const [bankroll,setBankroll]=useState<number>(()=>{ try{ const v=localStorage.getItem(LSKEY.bankroll); return v?JSON.parse(v):500 }catch{return 500} });
+  const [riskPct,setRiskPct]=useState<number>(()=>{ try{ const v=localStorage.getItem(LSKEY.risk); return v?JSON.parse(v):2 }catch{return 2} });
+  useEffect(()=>localStorage.setItem(LSKEY.legs, JSON.stringify(legs)),[legs]);
+  useEffect(()=>localStorage.setItem(LSKEY.bankroll, JSON.stringify(bankroll)),[bankroll]);
+  useEffect(()=>localStorage.setItem(LSKEY.risk, JSON.stringify(riskPct)),[riskPct]);
+
+  /* live odds / suggester */
+  const [useLive, setUseLive] = useState(false);
+  const [liveProps, setLiveProps] = useState<OddsLeg[] | null>(null);
+  const pollSec = Number(import.meta.env.VITE_ODDS_POLL || 30);
+  useEffect(() => {
+    let t:any; let kill=false;
+    async function pull(){ try{ const d=await getOddsAll(); if(!kill) setLiveProps(d);}catch{ if(!kill) setLiveProps(null);} }
+    if(useLive){ pull(); t=setInterval(pull, Math.max(10,pollSec)*1000);} else { setLiveProps(null); }
+    return ()=>{ kill=true; t && clearInterval(t); };
+  }, [useLive, pollSec]);
+
+  /* triggers demo */
+  const [trigs,setTrigs]=useState([
+    {label:"Spread flip (dog -> fave)", active:true},
+    {label:"Totals swing > 1.5 (3m)", active:true},
+    {label:"Key injury Q -> Out", active:false},
+    {label:"Steam vs public% divergence", active:true}
+  ]);
+  useEffect(()=>{ const id=setInterval(()=>setTrigs(t=>t.map((x,i)=> i===2 ? {...x, active: !x.active} : x)), 6000); return ()=>clearInterval(id); },[]);
+
+  /* OCR + matchups */
+  const [uploadName,setUploadName]=useState<string|null>(null);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrText, setOcrText] = useState<string>("");
+  const [ocrTeams, setOcrTeams] = useState<string[]>([]);
+  const [matchups, setMatchups] = useState<Matchup[]>([]);
+  useEffect(()=>{ (async()=>{ try{ setMatchups(await getAllMatchups()); }catch{} })(); },[]);
+
+  /* section open/close persisted */
+  const defaultOpen = { oneclick:true, builder: true, suggester: true, triggers: false, fromShot: false, parlay: true, edge: true, ocr: false };
+  const [open, setOpen] = useState(()=>{ try{ return {...defaultOpen, ...(JSON.parse(localStorage.getItem(LSKEY.open) || "{}"))}; }catch{ return defaultOpen; }});
+  useEffect(()=> localStorage.setItem(LSKEY.open, JSON.stringify(open)), [open]);
+  function toggle(k: keyof typeof open){ setOpen(o=>({...o, [k]: !o[k]})); }
+  function collapseAll(){ setOpen({ oneclick:false,builder:false, suggester:false, triggers:false, fromShot:false, parlay:false, edge:false, ocr:false }); }
+  function expandAll(){ setOpen({ oneclick:true,builder:true, suggester:true, triggers:true, fromShot:true, parlay:true, edge:true, ocr:true }); }
+
+  /* detect league after OCR */
+  const [detectedLeague, setDetectedLeague] = useState<"NFL"|"NBA"|"MLB"|"UFC"|null>(null);
+  useEffect(() => {
+    if (!ocrText) return;
+    const league = detectLeagueFromText(ocrText);
+    setDetectedLeague(league);
+    if (autoCollapse && league) {
+      setOpen(o=>({ ...o, fromShot:true, ocr:true, suggester:true, parlay:true, edge: league !== "UFC" }));
+      setFilterLeague(league);
+    }
+  }, [ocrText, autoCollapse]);
+
+  /* best guesses from OCR */
+  function bestGuessesFromOCR(): { m: Matchup; guessTeam: string; prob: number; odds: number }[] {
+    if (!ocrTeams.length || !matchups.length) return [];
+    const teamUniverse = Array.from(new Set(matchups.flatMap(m => [m.home, m.away])));
+    const fuseTeams = new Fuse(teamUniverse, { includeScore: true, threshold: 0.35 });
+    const hits: { m: Matchup; guessTeam: string; prob: number; odds: number }[] = [];
+    for (const m of matchups) {
+      if (filterLeague && m.league !== filterLeague) continue;
+      const seenHome = ocrTeams.some(t => m.home.toLowerCase().includes(t.toLowerCase()) || t.toLowerCase().includes(m.home.toLowerCase()));
+      const seenAway = ocrTeams.some(t => m.away.toLowerCase().includes(t.toLowerCase()) || t.toLowerCase().includes(m.away.toLowerCase()));
+      const fuzzyHit = !!(fuseTeams.search(m.home)[0] || fuseTeams.search(m.away)[0]);
+      if (seenHome || seenAway || fuzzyHit) {
+        const guessTeam = m.favTeam;
+        hits.push({ m, guessTeam, prob: m.favProb, odds: m.favOdds });
+      }
+    }
+    return hits.sort((x,y)=> y.prob - x.prob).slice(0, 6);
+  }
+
+  /* math for parlay + one-click */
+  const hitPct = useMemo(()=>legs.reduce((a,l)=>a*l.prob,1),[legs]);
+  const payoutX= useMemo(()=>legs.reduce((a,l)=>a*americanToDecimal(l.odds),1),[legs]);
+
+  /* one-click state */
+  const [stake, setStake] = useState(50);
+  const [note, setNote] = useState("");
+  const [processing, setProcessing] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+
+  async function pasteFromClipboard(){
+    try{
+      // Browser support varies; this will no-op if unavailable.
+      // @ts-ignore
+      const items = await navigator.clipboard?.read?.();
+      if(!items) return alert("Paste not supported here. Use Upload.");
+      for(const item of items){
+        if(item.types.includes("image/png") || item.types.includes("image/jpeg")){
+          const blob = await item.getType(item.types[0]);
+          setProcessing(true);
+          setUploadName("pasted-image");
+          const res = await ocrImage(new File([blob], "paste.png", { type: blob.type }));
+          setOcrText(res.text); setOcrTeams(res.teams);
+          setProcessing(false);
+          return;
+        }
+      }
+      alert("No image in clipboard.");
+    }catch{ alert("Clipboard access not available on this device."); }
+  }
+
+  return (
+    <div className={cx("min-h-screen text-[14px] leading-[1.35]", dark?"bg-neutral-950 text-white":"bg-neutral-50 text-neutral-900")}>
+      {/* Header */}
+      <header className="sticky top-0 z-40 border-b border-white/10 backdrop-blur">
+        <div className="max-w-6xl mx-auto px-3 py-2.5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0
+            <BrandLogo />">
+            <Logo dark={dark} />
+            <div className="leading-tight truncate">
+              <p className="text-[11px] opacity-70">BetrSlip</p>
+              <h1 className="text-[16px] font-semibold gradient-text truncate">AI Sports Betting Assistant</h1>
+        <Tagline />
+            </div>
+          </div>
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="scroll-chips -mx-2 px-2 max-w-[55vw] sm:max-w-none">
+              <div className="flex items-center gap-1.5 min-w-max">
+                {(["NFL","NBA","MLB","UFC"] as const).map((lg) => (
+                  <button key={lg} onClick={()=> setFilterLeague(v => v===lg ? null : lg)}
+                    className={cx("text-[12px] px-2.5 py-1 rounded-full border",
+                      filterLeague===lg ? "border-[var(--accent)] bg-[color:rgb(37_99_235_/_0.15)]" : "border-white/15 hover:bg-white/[0.06]")}>
+                    {lg}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <Button variant={useLive ? "secondary" : "outline"} size="lg" onClick={()=>setUseLive(v=>!v)}>{useLive ? "Live: ON" : "Live: OFF"}</Button>
+            <Button variant="outline" size="lg" onClick={async()=>{
+              const text = `🎟️ BetrSlip slate:\n` + legs.map(l => `• ${l.label} (${l.odds > 0 ? "+"+l.odds : l.odds})`).join("\n");
+              if (navigator.share) { try { await navigator.share({ title: "BetrSlip", text }); } catch {} }
+              else { await navigator.clipboard.writeText(text); alert("Slate copied"); }
+            }}>Share</Button>
+          </div>
+        </div>
+      </header>
+
+      {/* toolbar */}
+      <div className="max-w-6xl mx-auto px-3 mt-3 flex gap-2">
+        <Button variant="outline" onClick={collapseAll}>Collapse All</Button>
+        <Button variant="primary" onClick={expandAll}>Expand All</Button>
+      </div>
+
+      {/* Main */}
+      <main className="max-w-6xl mx-auto px-3 pt-3">
+        {/* NEW: One-Click flow */}
+        <Section title="One-Click (Upload → Stake → Go)" icon="🎟️" open={open.oneclick} onToggle={()=>toggle("oneclick")}
+          right={<span className="text-[11px] opacity-60">{detectedLeague ? `Detected: ${detectedLeague}` : "auto-detects sport"}</span>}>
+          {/* Upload / Paste */}
+          <div className="grid md:grid-cols-[1.4fr_1fr] gap-3">
+            <div>
+              <div className="border border-dashed rounded-xl p-4 grid place-items-center text-center">
+                <div className="text-[13px] opacity-80">🖼️ Upload a slip or tap Paste</div>
+                <div className="mt-2 flex items-center gap-2">
+                  <Button variant="outline" onClick={()=>{
+                    const inp=document.createElement("input"); inp.type="file"; inp.accept="image/*";
+                    inp.onchange=async()=>{ const file=inp.files?.[0]; if(!file) return;
+                      setUploadName(file.name); setProcessing(true);
+                      try{ const res=await ocrImage(file); setOcrText(res.text); setOcrTeams(res.teams);}
+                      finally{ setProcessing(false); }
+                    }; inp.click();
+                  }}>Upload</Button>
+                  <Button variant="ghost" onClick={pasteFromClipboard}>Paste</Button>
+                  {uploadName && <Badge>{uploadName}</Badge>}
+                </div>
+              </div>
+
+              {/* Context note */}
+              <div className="mt-3">
+                <label className="text-[12px] opacity-70">📝 Add Context (optional)</label>
+                <textarea
+                  value={note} onChange={e=>setNote(e.target.value.slice(0,500))}
+                  className="mt-1 w-full min-h-[80px] rounded-lg bg-black/30 border border-white/10 p-2.5 outline-none"
+                  placeholder="e.g., Only the overs in this image…"
+                />
+                <div className="text-[11px] opacity-60 text-right">{note.length}/500</div>
+              </div>
+            </div>
+
+            {/* Stake + CTA */}
+            <div>
+              <QuickStake stake={stake} setStake={setStake} />
+              <button
+                className="mt-3 w-full rounded-xl bg-emerald-500 text-black py-2 font-semibold active:scale-[0.99]"
+                onClick={async ()=>{
+                  setProcessing(true);
+                  // simulate short processing (e.g., OCR + mapping)
+                  setTimeout(()=>{ setProcessing(false); setShowModal(true); }, 900);
+                }}
+              >
+                Straight to Betslip →
+              </button>
+              <div className="text-[12px] opacity-70 mt-1">Shows modal with slip legs & potential payout.</div>
+            </div>
+          </div>
+        </Section>
+
+        {/* Existing sections (kept) */}
+        <Section title="Parlay Builder" icon="🧩" open={open.builder} onToggle={()=>toggle("builder")}
+          right={<span className="text-[11px] opacity-60">Detected: {detectedLeague ?? "—"}</span>}>
+          <textarea value={prompt} onChange={e=>setPrompt(e.target.value)}
+            className="w-full min-h-[90px] rounded-lg bg-black/30 border border-white/10 p-2.5 outline-none"
+            placeholder="Describe what you want..." />
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            <Button>Run</Button>
+            <Button variant="outline" onClick={async ()=>{
+              const canvas = await html2canvas(document.documentElement as HTMLElement, {useCORS:true, backgroundColor: dark ? "#0a0a0c" : "#fafafa"});
+              canvas.toBlob((blob)=> blob && saveAs(blob, "betrslip.png"));
+            }}>PNG</Button>
+            <Button variant="ghost" onClick={()=>{
+              saveAs(new Blob([JSON.stringify({ legs, bankroll:500, riskPct:2 }, null, 2)], {type: "application/json"}), "betrslip.json");
+            }}>JSON</Button>
+          </div>
+        </Section>
+
+        <Section title="Prop Auto-Suggester" icon="🤖" open={open.suggester} onToggle={()=>toggle("suggester")}>
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {(liveProps ?? SAMPLE_PROPS).filter(p=>!filterLeague || p.league===filterLeague).slice(0,9).map((p:any,i:number)=>(
+              <div key={i} className="rounded-lg border border-white/10 p-3">
+                <div className="text-[11px] uppercase opacity-60 mb-0.5">{p.league || "N/A"}</div>
+                <div className="font-medium text-[14px]">{p.player || p.label?.split(" — ")[0] || "Unknown"}</div>
+                <div className="text-[12px] opacity-80">{(p.market || "Market")}{p.line?` • ${p.line}`:""}</div>
+                <div className="flex items-center justify-between mt-2">
+                  <Badge>Hit ~{Math.round((p.prob ?? 0.5)*100)}%</Badge>
+                  <Button onClick={()=>setLegs(l=>[...l,{label:p.label ?? `${p.player} — ${p.market}`, odds:p.odds, prob:p.prob ?? 0.5}])}>Add</Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+
+        <Section title="From Screenshot — Best Guesses" icon="🔎" open={open.fromShot} onToggle={()=>toggle("fromShot")}>
+          {!ocrText && <p className="text-[12px] opacity-70">Upload a slip or scoreboard; we’ll show favorites with implied win %.</p>}
+          {ocrText && (
+            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {bestGuessesFromOCR().map((g, i) => (
+                <div key={i} className="rounded-lg border border-white/10 p-3">
+                  <div className="text-[11px] uppercase opacity-60 mb-0.5">{g.m.league}</div>
+                  <div className="text-[13px]">{g.m.away} @ {g.m.home}</div>
+                  <div className="text-[12px] opacity-80 mt-0.5">
+                    Best: <b>{g.guessTeam}</b> ({(g.prob*100).toFixed(1)}%) • {g.odds>0?`+${g.odds}`:g.odds}
+                  </div>
+                  <div className="mt-2 flex gap-1.5">
+                    <Button onClick={()=>setLegs(l=>[...l,{label:`${g.guessTeam} — H2H`, odds:g.odds, prob:g.prob}])}>Add to Parlay</Button>
+                    <Button variant="outline" onClick={()=>navigator.clipboard.writeText(`${g.m.away} @ ${g.m.home} -> ${g.guessTeam} ${(g.prob*100).toFixed(1)}% ${g.odds>0?`+${g.odds}`:g.odds}`)}>Copy</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+
+        {/* Parlay + Edge Table kept as before */}
+        <div className="grid lg:grid-cols-3 gap-4 mt-4">
+          <Section title="Parlay Blueprint" icon="📐" open={open.parlay} onToggle={()=>toggle("parlay")}>
+            <div className="space-y-1.5">
+              {legs.length===0 && <div className="text-[12px] opacity-70">No legs yet. Add from the suggester or screenshot guesses.</div>}
+              {legs.map((l,i)=>(
+                <div key={i} className="flex items-center justify-between rounded-lg border border-white/10 p-2.5">
+                  <div className="min-w-0 pr-2">
+                    <div className="font-medium text-[13px] truncate">{l.label}</div>
+                    <div className="text-[11px] opacity-70">Odds {l.odds>0?`+${l.odds}`:l.odds} • Hit ~{Math.round(l.prob*100)}%</div>
+                  </div>
+                  <Button variant="danger" onClick={()=>setLegs(legs.filter((_,idx)=>idx!==i))}>Remove</Button>
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-3">
+              <Stat label="Hit %" value={`${Math.round(hitPct*100)}%`} />
+              <Stat label="Payout" value={`${payoutX.toFixed(2)}x`} />
+            </div>
+          </Section>
+
+          <Section title="Edge Table (sample)" icon="📊" open={open.edge} onToggle={()=>toggle("edge")}>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[13px]">
+                <thead className="text-left opacity-70">
+                  <tr className="[&>th]:py-1.5 [&>th]:px-3">
+                    <th>Market</th><th>Line</th><th>Odds</th><th>Impl</th><th>Sharp</th><th>Public</th><th>CLV</th><th>Vol</th><th></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {[
+                    { league:"NFL", market:"NFL • Total", line:"O 44.5",  odds:-105, impl:implied(-105), sharp:63, public:48, clv:"+0.8", vol:"med" },
+                    { league:"NBA", market:"NBA • Spread", line:"LAL -3.5",odds:-110, impl:implied(-110), sharp:58, public:72, clv:"+0.3", vol:"low" },
+                    { league:"UFC", market:"UFC • ML",    line:"Fighter A",odds:-145, impl:implied(-145), sharp:61, public:39, clv:"+1.1", vol:"high"},
+                    { league:"MLB", market:"MLB • TB",    line:"A. Judge 1.5+",odds:120, impl:implied(120), sharp:55, public:64, clv:"-0.2", vol:"med"},
+                  ]
+                  .filter(r => !filterLeague || r.league === filterLeague)
+                  .map((r,i)=>(
+                    <tr key={i} className="hover:bg-white/[0.05] [&>td]:py-1.5 [&>td]:px-3">
+                      <td className="truncate">{r.market}</td>
+                      <td>{r.line}</td>
+                      <td>{r.odds>0?`+${r.odds}`:r.odds}</td>
+                      <td>{(r.impl*100).toFixed(1)}%</td>
+                      <td>{r.sharp}%</td>
+                      <td>{r.public}%</td>
+                      <td>{r.clv}</td>
+                      <td>{r.vol}</td>
+                      <td className="text-right">
+                        <Button variant="ghost" onClick={()=>setLegs(l=>[...l,{label:r.market+" — "+r.line, odds:r.odds, prob:r.impl}])}>Add</Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Section>
+        </div>
+
+        <footer className="py-6 mt-8">
+          <div className="rounded-2xl border border-white/10 p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+            <div>
+              <div className="font-semibold text-[14px]">Built for bettors. Powered by AI.</div>
+              <p className="text-[12px] opacity-70 mt-0.5">Educational use only. Not financial advice.</p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button variant="outline" onClick={async ()=>{
+                const canvas = await html2canvas(document.documentElement as HTMLElement, {useCORS:true, backgroundColor: dark ? "#0a0a0c" : "#fafafa"});
+                canvas.toBlob((blob)=> blob && saveAs(blob, "betrslip.png"));
+              }}>Download Preview</Button>
+              <Button variant="secondary" onClick={async ()=>{
+                const text = `BetrSlip slate:\n` + legs.map(l => `• ${l.label} (${l.odds > 0 ? "+"+l.odds : l.odds})`).join("\n");
+                if (navigator.share) { try { await navigator.share({ title: "BetrSlip", text }); } catch {} }
+                else { await navigator.clipboard.writeText(text); alert("Slate copied"); }
+              }}>Share</Button>
+            </div>
+          </div>
+          <div className="text-[11px] opacity-60 mt-3">© {new Date().getFullYear()} BetrSlip — For research & tracking only.</div>
+        </footer>
+      </main>
+
+      <InstallPrompt />
+
+      {/* Overlays / Modals */}
+      <ProcessingOverlay show={processing} />
+      <BetSlipModal open={showModal} onClose={()=>setShowModal(false)} stake={stake} legs={legs} payoutX={payoutX} />
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-lg border border-white/10 p-2.5"><div className="text-[11px] opacity-60">{label}</div><div className="text-[15px] font-semibold mt-0.5">{value}</div></div>;
+}
