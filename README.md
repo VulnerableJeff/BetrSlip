@@ -1,4 +1,5 @@
-README.md
+![BetrSlip Logo](https://i.imgur.com/4gjOdfZ.png)
+
 
 # 🧠 BetrSlip — AI Sports Betting Assistant
 
