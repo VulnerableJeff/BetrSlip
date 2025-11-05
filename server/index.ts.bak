@@ -1,0 +1,61 @@
+import express from "express";
+import multer from "multer";
+import cors from "cors";
+
+const app = express();
+const upload = multer({ storage: multer.memoryStorage() });
+const PORT = Number(process.env.PORT || 8787);
+
+app.use(cors());
+app.use(express.json());
+
+// --- API endpoints ---
+app.get("/health", (req, res) => res.json({ ok: true, status: "healthy" }));
+
+app.post("/ocr", upload.single("image"), (req, res) => {
+  if (!req.file) return res.status(400).json({ ok: false, error: "No file" });
+  // Stub example — replace with OCR logic later
+  res.json({
+    ok: true,
+    legs: [
+      { label: "OCR Example A", odds: -120, prob: 0.55 },
+      { label: "OCR Example B", odds: 140, prob: 0.42 },
+    ],
+  });
+});
+
+app.get("/suggest", (req, res) => {
+  res.json({
+    ok: true,
+    picks: [
+      { id: "a", label: "Value Pick A", prob: 0.62, odds: -120, league: "NBA" },
+      { id: "b", label: "Value Pick B", prob: 0.58, odds: 130, league: "NFL" },
+      { id: "c", label: "Value Pick C", prob: 0.65, odds: -110, league: "MLB" },
+    ],
+  });
+});
+
+app.post("/parlay", (req, res) => {
+  const legs = req.body?.legs || [];
+  const combined = legs.reduce((acc: number, l: any) => acc * (1 / (1 + Math.abs(l.odds) / 100)), 1);
+  const winPercent = Math.max(1, (1 - combined) * 100);
+  res.json({
+    ok: true,
+    winPercent,
+    fairDecimal: (100 / winPercent).toFixed(2),
+    fairAmerican: Math.round((winPercent > 50 ? (100 / winPercent - 1) * 100 : -(100 / (100 - winPercent)))),
+    kelly: 0.05,
+  });
+});
+
+// --- error handler ---
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error("API Error:", err);
+  res.status(500).json({ ok: false, error: err.message || "Internal Server Error" });
+});
+
+// --- start server with safe port binding ---
+const server = app.listen(PORT, () => console.log(`✅ API listening on ${PORT}`));
+server.on("error", (e: any) => {
+  console.error("❌ API server error:", e.message);
+});

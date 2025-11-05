@@ -1,0 +1,128 @@
+import React, { useCallback, useMemo, useState } from "react";
+import { apiHealth, apiOcr, apiSuggest, apiParlay } from "./lib/api";
+
+type Leg = { label: string; odds: number; prob?: number };
+type PickT = { id: string; label: string; prob: number; odds: number; league?: string };
+
+// ----- Small UI bits -----
+const Tile = ({label,value}:{label:string;value:React.ReactNode}) => (
+  <div className="bg-slate-800/70 rounded-xl p-4">
+    <div className="text-xs uppercase tracking-wider text-slate-400">{label}</div>
+    <div className="text-2xl font-semibold text-white mt-1">{value}</div>
+  </div>
+);
+
+// ----- App -----
+export default function App(){
+  const [busy,setBusy]=useState<null|"health"|"ocr"|"suggest"|"parlay">(null);
+  const [err,setErr]=useState<string|null>(null);
+  const [legs,setLegs]=useState<Leg[]>([]);
+  const [picks,setPicks]=useState<PickT[]>([]);
+  const [sum,setSum]=useState<{winPct?:number;fairDecimal?:number;fairAmerican?:number;kellyPct?:number}>({});
+
+  const addLeg = (l:Leg)=>setLegs(xs=>[...xs,l]);
+  const rmLeg = (i:number)=>setLegs(xs=>xs.filter((_,k)=>k!==i));
+  const clearAll = ()=>{ setLegs([]); setPicks([]); setErr(null); setSum({}); };
+
+  const onHealth = useCallback(async()=>{
+    try{ setBusy("health"); setErr(null); const ok=await apiHealth(); if(!ok) setErr("API health failed"); }
+    catch(e:any){ setErr(String(e?.message||e)); } finally{ setBusy(null); }
+  },[]);
+
+  const onUploadStub = useCallback(async()=>{
+    try{ setBusy("ocr"); setErr(null); const r=await apiOcr("stub");
+      if(r?.ok && Array.isArray(r.legs)) r.legs.forEach((l:any)=>addLeg({label:String(l.label),odds:Number(l.odds),prob:Number(l.prob)}));
+      else setErr("OCR returned no legs");
+    } catch(e:any){ setErr(String(e?.message||e)); } finally{ setBusy(null); }
+  },[]);
+
+  const onSuggest = useCallback(async()=>{
+    try{ setBusy("suggest"); setErr(null); const r=await apiSuggest();
+      if(r?.ok && Array.isArray(r.picks)) setPicks(r.picks); else setErr("No picks");
+    } catch(e:any){ setErr(String(e?.message||e)); } finally{ setBusy(null); }
+  },[]);
+
+  const recompute = useCallback(async(src:Leg[])=>{
+    try{ setBusy("parlay"); setErr(null);
+      let r:any = await apiParlay(src); if(!r?.ok) r = await apiParlay({legs:src});
+      if(!r?.ok) throw new Error("Parlay compute failed");
+      setSum({ winPct:Number(r.winPercent), fairDecimal:Number(r.fairDecimal), fairAmerican:Number(r.fairAmerican), kellyPct:Number(r.kelly) });
+    } catch(e:any){ setErr(String(e?.message||e)); } finally{ setBusy(null); }
+  },[]);
+
+  React.useEffect(()=>{ if(legs.length) recompute(legs); else setSum({}); },[legs]); // eslint-disable-line
+
+  const winPctFmt = sum.winPct!=null?`${sum.winPct.toFixed(2)}%`:"—";
+  const kellyFmt = sum.kellyPct!=null?`${sum.kellyPct.toFixed(2)}%`:"—";
+  const fairDecFmt = sum.fairDecimal!=null?sum.fairDecimal.toFixed(2):"—";
+  const fairAmFmt = typeof sum.fairAmerican==="number" ? (sum.fairAmerican>0?"+":"")+sum.fairAmerican : "—";
+
+  return (
+    <div className="min-h-screen bg-[#0b0f1a] text-slate-200">
+      <header className="max-w-5xl mx-auto px-4 pt-5 flex items-center justify-between">
+        <div className="text-white text-2xl font-extrabold">BetrSlip (diagnostic)</div>
+        <button onClick={onHealth} className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700" disabled={busy==="health"}>
+          {busy==="health"?"Checking…":"Health"}
+        </button>
+      </header>
+
+      <section className="max-w-5xl mx-auto px-4 mt-6 grid md:grid-cols-2 gap-6">
+        <div className="rounded-3xl p-6 border border-white/5 bg-slate-900/40">
+          <div className="text-3xl font-extrabold text-white">Upload a Screenshot</div>
+          <div className="mt-6 flex gap-3">
+            <button onClick={onUploadStub} disabled={busy==="ocr"} className="px-5 py-3 rounded-xl bg-violet-600 text-white">Upload Screenshot (stub)</button>
+            <button onClick={onSuggest} disabled={busy==="suggest"} className="px-5 py-3 rounded-xl bg-slate-800">AI Suggest</button>
+            <button onClick={clearAll} className="px-5 py-3 rounded-xl bg-rose-600 text-white">Clear</button>
+          </div>
+          {!!err && <div className="mt-4 text-rose-300 text-sm bg-rose-900/30 border border-rose-800/50 rounded-lg p-3">{err}</div>}
+        </div>
+
+        <div className="bg-slate-900/40 rounded-3xl border border-white/5 p-6">
+          <div className="text-white font-semibold text-lg mb-4">Parlay Summary</div>
+          {legs.length===0 ? <div className="text-slate-400 text-sm">Add legs to see parlay probability.</div> :
+            <div className="grid grid-cols-2 gap-3">
+              <Tile label="Win %" value={winPctFmt} />
+              <Tile label="Fair Decimal" value={fairDecFmt} />
+              <Tile label="Fair American" value={fairAmFmt} />
+              <Tile label="Kelly %" value={kellyFmt} />
+            </div>}
+          {legs.length>0 && <button onClick={()=>recompute(legs)} disabled={busy==="parlay"} className="mt-4 w-full px-5 py-3 rounded-xl bg-slate-800">{busy==="parlay"?"Recomputing…":"Recompute with API"}</button>}
+        </div>
+      </section>
+
+      <main className="max-w-5xl mx-auto px-4 mt-8 grid md:grid-cols-2 gap-6 pb-24">
+        <div className="bg-slate-900/40 rounded-3xl border border-white/5 p-6">
+          <div className="text-white font-semibold text-lg mb-4">Your Betslip</div>
+          {legs.length===0 ? <div className="text-slate-400">No legs yet. Upload or Suggest.</div> :
+            <div className="space-y-3">
+              {legs.map((l,i)=>(
+                <div key={i} className="flex items-center justify-between bg-slate-800/70 rounded-xl p-4">
+                  <div>
+                    <div className="text-white font-medium">{l.label}</div>
+                    <div className="text-slate-400 text-sm">odds {l.odds} {typeof l.prob==="number"?`• p≈${(l.prob*100).toFixed(0)}%`:""}</div>
+                  </div>
+                  <button onClick={()=>rmLeg(i)} className="px-3 py-1.5 rounded-lg bg-slate-700 text-sm">Remove</button>
+                </div>
+              ))}
+            </div>}
+        </div>
+
+        <div className="bg-slate-900/40 rounded-3xl border border-white/5 p-6">
+          <div className="text-white font-semibold text-lg mb-4">AI Tools</div>
+          {picks.length===0 ? <div className="text-slate-400">Click AI Suggest to see picks.</div> :
+            <div className="space-y-3">
+              {picks.map(p=>(
+                <div key={p.id} className="flex items-center justify-between bg-slate-800/70 rounded-xl p-4">
+                  <div>
+                    <div className="text-white font-medium">{p.label} <span className="text-slate-400">({(p.prob*100).toFixed(0)}%)</span></div>
+                    <div className="text-slate-400 text-sm">{p.league||"Mixed"} • odds {p.odds}</div>
+                  </div>
+                  <button onClick={()=>addLeg({label:p.label,odds:p.odds,prob:p.prob})} className="px-4 py-2 rounded-lg bg-violet-600 text-white">Add to Betslip</button>
+                </div>
+              ))}
+            </div>}
+        </div>
+      </main>
+    </div>
+  );
+}

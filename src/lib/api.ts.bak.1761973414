@@ -1,0 +1,60 @@
+const BASE = (import.meta.env.VITE_API_URL ?? "http://localhost:8787").replace(/\/+$/,"");
+
+async function j(req: Promise<Response>) {
+  const r = await req;
+  const ct = r.headers.get("content-type") || "";
+  const data = ct.includes("application/json") ? await r.json().catch(() => ({})) : {};
+  if (!r.ok) throw new Error(data?.error || data?.message || `HTTP ${r.status}`);
+  return data;
+}
+
+export async function apiHealth(): Promise<boolean> {
+  try { await j(fetch(`${BASE}/health`, { method: "GET" })); return true; }
+  catch { return false; }
+}
+
+export async function apiOcr(source: File | string) {
+  // For now we support a 'stub' string; wire real upload later
+  if (source === "stub") {
+    return { ok: true, legs: [
+      { label: "OCR: -120", odds: -120, prob: 0.55 },
+      { label: "OCR: +140", odds: 140,  prob: 0.42 },
+    ]};
+  }
+  // example multipart upload (uncomment when your endpoint is ready)
+  // const fd = new FormData(); fd.append("file", source as File);
+  // return j(fetch(`${BASE}/ocr`, { method: "POST", body: fd }));
+  return { ok: false, legs: [] };
+}
+
+export async function apiSuggest() {
+  // call your backend; fallback to demo picks
+  try { return await j(fetch(`${BASE}/suggest`, { method: "GET" })); }
+  catch {
+    return { ok: true, picks: [
+      { id: "a", label: "Value Pick A", prob: 0.62, odds: -120, league: "NBA" },
+      { id: "b", label: "Value Pick B", prob: 0.58, odds: 130,  league: "NFL" },
+      { id: "c", label: "Value Pick C", prob: 0.65, odds: -110, league: "MLB" },
+    ]};
+  }
+}
+
+export async function apiParlay(body: { legs: Array<{ odds: number }> }) {
+  try { return await j(fetch(`${BASE}/parlay`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })); }
+  catch {
+    // simple local math fallback
+    const pLeg = (o:number)=> (o>0 ? 100/(o+100) : (-o)/(100+(-o)));
+    const win = body.legs.reduce((acc,l)=>acc*pLeg(l.odds),1);
+    return {
+      ok: true,
+      winPercent: +(win*100).toFixed(2),
+      fairDecimal: +((1/win)||0).toFixed(2),
+      fairAmerican: Math.round(win>0.5 ? -(win/(1-win))*100 : ((1-win)/win)*100),
+      kelly: +( ((win*0.9 - (1-win)) / 0.9) * 100 ).toFixed(2) // assume 10% vig
+    };
+  }
+}

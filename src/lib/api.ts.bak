@@ -1,0 +1,51 @@
+const API_BASE =
+  (typeof location !== "undefined" &&
+    (location.port === "5173" || location.port === "5174" || location.port === "5199"))
+    ? "http://localhost:8787"
+    : "";
+
+async function asJson(r: Response) {
+  const ct = r.headers.get("content-type") || "";
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`API ${r.status}: ${text.slice(0,200)}`);
+  }
+  if (!ct.includes("application/json")) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`Expected JSON, got ${ct || "unknown"} → ${text.slice(0,200)}`);
+  }
+  return r.json();
+}
+
+export async function apiHealth() {
+  const r = await fetch(`${API_BASE}/api/health`);
+  return r.ok;
+}
+
+export async function apiOcr(file: File | "stub") {
+  if (file === "stub") return { ok: true, legs: [] };
+  const fd = new FormData();
+  fd.append("image", file);
+  const r = await fetch(`${API_BASE}/api/ocr`, { method: "POST", body: fd });
+  return asJson(r);
+}
+
+export async function apiSuggest(params?: {
+  sport?: string;
+  market?: string;
+  hours?: number;
+  limit?: number;
+}) {
+  const q = new URLSearchParams(Object.entries(params || {})).toString();
+  const r = await fetch(`${API_BASE}/api/suggest${q ? `?${q}` : ""}`);
+  return asJson(r);
+}
+
+export async function apiParlay(body: { legs: { odds: number }[] }) {
+  const r = await fetch(`${API_BASE}/api/parlay`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return asJson(r);
+}

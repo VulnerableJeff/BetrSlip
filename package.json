@@ -4,25 +4,47 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host",
+    "dev": "concurrently -k -n API,WEB \"pnpm run api\" \"pnpm run web\"",
     "build": "vite build",
-    "preview": "vite preview --host"
+    "preview": "vite preview --host",
+    "predeploy": "pnpm run build || npm run build || yarn build",
+    "deploy": "gh-pages -d dist",
+    "postbuild": "cp dist/index.html dist/404.html && bash -lc 'printf \"\" > dist/.nojekyll'",
+    "api": "NODE_OPTIONS=--enable-source-maps tsx server/index.ts --port 8788",
+    "web": "vite --host"
   },
   "dependencies": {
+    "axios": "^1.12.2",
+    "body-parser": "^2.2.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
     "file-saver": "2.0.5",
     "fuse.js": "7.1.0",
     "html2canvas": "1.4.1",
+    "multer": "^2.0.2",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "tesseract.js": "5.1.1"
+    "uuid": "^13.0.0",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^24.9.1",
     "@types/react": "18.3.26",
     "@types/react-dom": "18.3.7",
     "@vitejs/plugin-react": "4.7.0",
     "autoprefixer": "10.4.21",
+    "concurrently": "^9.2.1",
+    "gh-pages": "^6.3.0",
+    "nodemon": "^3.1.10",
     "postcss": "8.5.6",
     "tailwindcss": "3.4.18",
+    "tesseract.js": "5.1.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.20.6",
     "typescript": "5.4.5",
     "vite": "5.4.21"
   }

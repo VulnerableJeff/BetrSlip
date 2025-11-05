@@ -1,190 +1,162 @@
-import React, { useEffect, useState } from "react";
-import SmartLogo from "./components/SmartLogo";
-import ProcessingOverlay from "./components/ProcessingOverlay";
-import { ocrImage } from "./ocr/extract";
-import { parseOcrText, guessSport, ParsedLeg } from "./lib/ocr";
-import { Toaster, notify } from "./lib/notify";
+import React, { useState, useCallback } from "react";
+import logo from "./assets/betrslip-logo.png";
+import { apiHealth, apiOcr, apiSuggest, apiParlay } from "./lib/api";
+import LegCard from "./components/LegCard";
+import UploadButton from "./components/UploadButton";
+
+type Leg = { label: string; odds: number; prob?: number };
+type PickT = { id: string; label: string; prob: number; odds: number; league?: string };
+type Scan = { id: string; name: string; url: string; legs?: Leg[] };
+
+const safePct = (n?: number) => (Number.isFinite(n) ? `${(100 * n!).toFixed(0)}%` : "—");
+const safeNum = (n?: number, d = 2) => (Number.isFinite(n as number) ? (n as number).toFixed(d) : "—");
+const safeAm  = (n?: number) => (Number.isFinite(n as number) ? ((n as number) > 0 ? `+${n}` : `${n}`) : "—");
+const impliedProb = (odds: number) => (odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100));
+
+const Brand = () => (
+  <div className="flex items-center gap-3">
+    <img src={logo} alt="BetrSlip" className="w-9 h-9 rounded-xl shadow-lg" />
+    <div className="font-semibold tracking-wide text-white text-xl">BetrSlip</div>
+  </div>
+);
+
+const ProviderPills = ({ active, setActive }: { active: string; setActive: (s: string)=>void }) => {
+  const items = ["Hard Rock", "DraftKings", "FanDuel"];
+  return (
+    <div className="flex flex-wrap gap-2">
+      {items.map((it) => {
+        const on = active === it;
+        return (
+          <button
+            key={it}
+            onClick={() => setActive(it)}
+            className={`px-4 py-2 rounded-full text-sm transition ${on ? "bg-white/10 text-white" : "bg-white/5 text-slate-300 hover:bg-white/10"}`}
+          >
+            {it}
+          </button>
+        );
+      })}
+    </div>
+  );
+};
 
 export default function App() {
-  const [legs, setLegs] = useState<ParsedLeg[]>([]);
-  const [detectedSport, setDetectedSport] = useState("Unknown");
-  const [aiOn, setAiOn] = useState(true);
-  const [processing, setProcessing] = useState(false);
+  // tabs: home, scans, edge, help
+  const [tab, setTab] = useState("home" as "home"|"scans"|"edge"|"help");
+  const [busy, setBusy] = useState(null as null | "health" | "ocr" | "suggest" | "parlay");
+  const [err, setErr] = useState(null as string | null);
+  const [legs, setLegs] = useState([] as Leg[]);
+  const [provider, setProvider] = useState("Hard Rock");
 
-  // ---- Bridge: make window.mergeFromText available everywhere
-  useEffect(() => {
-    (window as any).mergeFromText = (text: string) => {
-      try {
-        const next = parseOcrText(text);
-        const sport = guessSport(text);
-        if (sport && sport !== "Unknown") setDetectedSport(sport);
-        if (next?.length) setLegs(next);
-      } catch (e) {
-        console.error("mergeFromText failed:", e);
-      }
-    };
- 
-   async function handleUpload(file: File) {
-  setProcessing(true);
-  try {
-    console.log("Picked file:", file?.name, file?.size);
-    const text = await ocrImage(file);
-    console.log("OCR text preview:", (text || "").slice(0, 200));
-    (window as any).mergeFromText(text);
-    notify.success("Screenshot processed");
-  } catch (err: any) {
-    console.error("OCR upload error:", err);
-    const msg = typeof err?.message === "string" ? err.message : String(err);
-    if (/network|fetch/i.test(msg)) {
-      notify.error("OCR failed to download language data. Check internet and try again.");
-    } else if (/timeout|slow/i.test(msg)) {
-      notify.info("OCR is taking a while… try a smaller screenshot.");
-    } else {
-      notify.error("Could not read screenshot. Please try another image or retake the screenshot.");
-    }
-  } finally {
-    setProcessing(false);
-  }
-}
-    // quick helper for manual testing
-    (window as any).addLeg = (s: any) =>
-      setLegs((ls) => [
-        ...ls,
-        {
-          label: String(s.label ?? "Selection"),
-          odds: Number(s.odds ?? 0),
-          market: s.market ?? "",
-          line: s.line ?? "",
-          confidence:
-            typeof s.confidence === "number" ? s.confidence : 0.8,
-          sport: s.sport ?? detectedSport,
-        },
-      ]);
-  }, [detectedSport]);
-
-  // ---- Upload handler → OCR → parse
-  async function handleUpload(file: File) {
-    setProcessing(true);
+  const onHealth = useCallback(async () => {
     try {
-      const text = await ocrImage(file);        // must return raw text
-      (window as any).mergeFromText(text);      // reuse the same path
-    } catch (err) {
-      console.error("OCR upload error:", err);
-      notify.error("Could not read screenshot. Please try another image or retake the screenshot.");
-    } finally {
-      setProcessing(false);
-    }
-  }
+      setBusy("health"); setErr(null);
+      await apiHealth();
+    } catch (e:any) {
+      setErr(e?.message || String(e));
+    } finally { setBusy(null); }
+  }, []);
+
+  const onSuggest = useCallback(async () => {
+    try {
+      setBusy("suggest"); setErr(null);
+      const picks: PickT[] = await apiSuggest();
+      const newLegs: Leg[] = picks.map(p => ({ label: p.label, odds: p.odds, prob: p.prob }));
+      setLegs(xs => [...xs, ...newLegs]);
+    } catch (e:any) {
+      setErr(e?.message || String(e));
+    } finally { setBusy(null); }
+  }, []);
+
+  const onParlay = useCallback(async () => {
+    try {
+      setBusy("parlay"); setErr(null);
+      await apiParlay(legs);
+    } catch (e:any) {
+      setErr(e?.message || String(e));
+    } finally { setBusy(null); }
+  }, [legs]);
 
   return (
-    <div className="min-h-screen
-      <Toaster /> bg-[#0b0b0b] text-white px-4 py-6">
-      <header className="flex flex-col items-center mb-4">
-        <SmartLogo />
-        <h1 className="text-xl font-bold text-center mt-2">
-          AI Sports Betting Assistant
-        </h1>
-        <div className="text-sm opacity-80 mt-1">
-          AI: {aiOn ? "ON" : "OFF"} · Sport: {detectedSport}
-        </div>
+    <>
+      <div className="min-h-screen bg-slate-950 text-slate-200">
+        <div className="max-w-3xl mx-auto p-4 space-y-6">
+          <div className="flex items-center justify-between">
+            <Brand />
+            <button
+              onClick={onHealth}
+              className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/15"
+              disabled={busy === "health"}
+            >
+              Health
+            </button>
+          </div>
 
-        <div className="flex flex-wrap justify-center gap-2 mt-4">
-          <label className="bg-gray-700 px-4 py-2 rounded cursor-pointer hover:bg-gray-600">
-            Upload Screenshot
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => e.target.files && handleUpload(e.target.files[0])}
-              className="hidden"
-            />
-          </label>
-
-          <button
-            onClick={() =>
-              (window as any).mergeFromText?.(
-                "Mallorca +260\nLevante +105\nTie +230\nIK Sirius -155"
-              )
-            }
-            className="bg-purple-600 px-4 py-2 rounded hover:bg-purple-500"
-          >
-            AI Suggest
-          </button>
-
-          <button
-            onClick={() =>
-              (window as any).addLeg({
-                label: "Sample Leg",
-                odds: +150,
-                sport: detectedSport,
-                confidence: 0.82,
-              })
-            }
-            className="bg-blue-600 px-4 py-2 rounded hover:bg-blue-500"
-          >
-            + Sample Leg
-          </button>
-
-          <button
-            onClick={() => setLegs([])}
-            className="bg-red-600 px-4 py-2 rounded hover:bg-red-500"
-          >
-            Clear
-          </button>
-
-          <button
-            onClick={() => setAiOn((v) => !v)}
-            className="bg-gray-800 px-4 py-2 rounded hover:bg-gray-700"
-          >
-            Toggle AI
-          </button>
-        </div>
-      </header>
-
-      <main className="space-y-3">
-        <div className="p-4 rounded-xl bg-gray-900">
-          <h2 className="font-semibold mb-2">Your Betslip</h2>
-          {legs.length === 0 ? (
-            <p className="text-sm opacity-70">
-              No legs yet. Upload a screenshot or click + Sample Leg.
+          <div className="rounded-2xl p-5 bg-gradient-to-b from-indigo-900/40 to-slate-900/40 border border-white/10 space-y-4">
+            <div className="text-3xl font-extrabold">Upload a Screenshot of Your Bet Slip</div>
+            <p className="text-slate-300">
+              We’ll parse odds and compute a fair price, win % and Kelly stake.
             </p>
-          ) : (
-            <ul className="space-y-2">
-              {legs.map((leg, i) => (
-                <li
-                  key={i}
-                  className="p-3 rounded-lg bg-gray-800 flex items-center justify-between"
-                >
-                  <div>
-                    <div className="font-medium">{leg.label}</div>
-                    <div className="text-xs opacity-70">
-                      {leg.sport || detectedSport}
-                    </div>
-                  </div>
 
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">
-                      {leg.odds > 0 ? `+${leg.odds}` : leg.odds}
-                    </span>
-                    <span className="text-xs border rounded-full px-2 py-0.5 opacity-80">
-                      {Math.round((leg.confidence ?? 0.75) * 100)}%
-                    </span>
-                    <button
-                      onClick={() =>
-                        setLegs((prev) => prev.filter((_, idx) => idx !== i))
-                      }
-                      className="text-xs bg-red-700 px-2 py-0.5 rounded hover:bg-red-600"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+            <ProviderPills active={provider} setActive={setProvider} />
+
+            <div className="flex gap-3">
+              <UploadButton
+                onAdded={(newLegs) => setLegs((xs) => [...xs, ...newLegs])}
+                setErr={setErr}
+                disabled={busy === "ocr"}
+              />
+              <button
+                onClick={onSuggest}
+                className="px-4 py-3 rounded-xl bg-white/10 hover:bg-white/15"
+                disabled={busy === "suggest"}
+              >
+                AI Suggest
+              </button>
+              <button
+                onClick={() => setLegs([])}
+                className="px-4 py-3 rounded-xl bg-rose-600/80 hover:bg-rose-600"
+              >
+                Clear
+              </button>
+            </div>
+
+            {err && (
+              <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-700/40 text-rose-200 text-sm">
+                {err}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl p-5 bg-white/5 border border-white/10 space-y-3">
+            <div className="text-xl font-semibold">Your Betslip</div>
+            {legs.length === 0 ? (
+              <div className="text-slate-400">No legs yet. Upload or Suggest.</div>
+            ) : (
+              <ul className="space-y-2">
+                {legs.map((leg, i) => (
+          <LegCard
+            key={i}
+            leg={leg}
+            onRemove={() =>
+              setLegs((xs) => xs.filter((_, j) => j !== i))
+            }
+          />
+        ))}
+              </ul>
+            )}
+            <div className="pt-2">
+              <button
+                onClick={onParlay}
+                className="w-full px-4 py-3 rounded-xl bg-indigo-600/90 hover:bg-indigo-600"
+                disabled={busy === "parlay" || legs.length === 0}
+              >
+                Recompute with API
+              </button>
+            </div>
+          </div>
         </div>
-      </main>
-
-      {processing && <ProcessingOverlay text="Reading screenshot..." />}
-    </div>
+      </div>
+    </>
   );
 }
